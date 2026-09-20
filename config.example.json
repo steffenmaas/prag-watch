@@ -1,0 +1,27 @@
+{
+  "_comment": "Kopieren nach config.json und ausfuellen. config.json ist gitignored (enthaelt Tokens).",
+
+  "wake_ratio": 0.75,
+  "info_ratio": 0.35,
+
+  "preferred_times": ["09:00"],
+  "preferred_weekdays": [5, 6],
+
+  "restricted_from": "2026-08-20",
+  "travel_weekdays": [4, 5],
+
+  "_watch_until_hinweis": "PFLICHT: Tag, an dem der Waechter aufhoert. Liegt er in der Vergangenheit, tut das Script gar nichts.",
+  "watch_until": "2026-09-16",
+  "realert_hours": 12,
+
+  "notify": {
+    "ntfy_topic": "prag-imax-DEINGEHEIMERSTRING",
+    "ntfy_server": "https://ntfy.sh",
+
+    "pushover_token": null,
+    "pushover_user": null,
+    "pushover_emergency": true,
+
+    "macos_local": true
+  }
+}
