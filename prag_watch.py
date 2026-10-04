@@ -39,7 +39,7 @@ FILM_NAME_HINT = "duna: cast treti"
 ATTR_70MM = "70-mm"
 API = "https://www.cinemacity.cz/cz/data-api-service/v1/quickbook"
 # Fallback only - the real film page (id + slug) is learned from the API.
-BOOKING_PAGE = "https://www.cinemacity.cz/cinemas/flora/1052"
+BOOKING_PAGE = "https://www.cinemacity.cz/cinemas/flora"
 FILM = {"id": None, "link": None}
 
 
