@@ -25,6 +25,12 @@ Entstanden in ein paar Runden mit Claude Code. Die eigentliche Arbeit steckte in
    freigeschalteter Schwung nach einer Stunde noch zu holen ist oder nach zehn Minuten schon
    halb weg.
 
+3. **Sucht Vorstellungen ohne Untertitel.** Alle Dune-Vorstellungen laufen bisher auf Englisch
+   mit tschechischen Untertiteln. Zusätzlich prüft das Script deshalb alle Cinema-City-Häuser in
+   Prag, in jedem Format, und meldet jede Vorstellung in Originalfassung ohne Untertitel genau
+   einmal. Synchronfassungen zählen nicht. Pro Spieltag kostet das eine einzige Abfrage, weil die
+   API alle Prager Häuser auf einmal liefert.
+
 ## Was es bewusst nicht tut
 
 - **Kein Login, kein Umgehen von Schutzmaßnahmen.** Es spricht ausschließlich die öffentliche

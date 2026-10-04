@@ -32,6 +32,7 @@ CONFIG = os.path.join(HERE, "config.json")
 
 TENANT = "10101"
 CINEMA = "1052"          # Praha Flora, OC FLORA
+GROUP = "prague"         # all Prague houses - for the no-subtitles watch
 # Matched against the Czech film name, case- and accent-insensitive. Use the
 # full title: "dun" alone also catches "SLAVTE S NÁMI: Dunkerk", and plain
 # "duna" would catch a 70mm re-run of Part One or Two.
@@ -201,6 +202,52 @@ def fetch_shows(date):
             "ratio": ev.get("availabilityRatio"),
             "soldOut": ev.get("soldOut"),
         }
+    return out
+
+
+def fetch_film_id(until):
+    """Resolve FILM_NAME_HINT to the API's film id (one call)."""
+    data = fetch(f"{API}/{TENANT}/films/until/{until}?attr=&lang=cs_CZ")
+    if not data:
+        return None
+    for film in data.get("body", {}).get("films", []):
+        if FILM_NAME_HINT in fold(film.get("name")):
+            FILM["id"] = film.get("id")
+            FILM["link"] = FILM["link"] or film.get("link")
+            return FILM["id"]
+    return None
+
+
+def fetch_unsubbed(film_id, until):
+    """All shows of the film in Prague (every Cinema City house, any format)
+    that run in the original language WITHOUT subtitles and are not dubbed.
+
+    One call for the dates plus one per day - the group endpoint returns all
+    Prague cinemas at once. Returns {event_id: {...}} or None on failure.
+    """
+    data = fetch(f"{API}/{TENANT}/dates/in-group/{GROUP}/with-film/{film_id}"
+                 f"/until/{until}?attr=&lang=cs_CZ")
+    if data is None:
+        return None
+    out = {}
+    for date in data.get("body", {}).get("dates", []):
+        day = fetch(f"{API}/{TENANT}/cinema-events/in-group/{GROUP}/with-film/"
+                    f"{film_id}/at-date/{date}?attr=&lang=cs_CZ")
+        if not day:
+            continue
+        body = day.get("body", {})
+        cinemas = {c["id"]: c.get("displayName", c["id"]) for c in body.get("cinemas", [])}
+        for ev in body.get("events", []):
+            langs = ev.get("languages") or {}
+            if langs.get("subtitles") or langs.get("dubbed") or langs.get("voiceover"):
+                continue
+            out[str(ev.get("id"))] = {
+                "when": ev.get("eventDateTime", "")[:16],
+                "cinema": cinemas.get(ev.get("cinemaId"), ev.get("cinemaId")),
+                "lang": "/".join(langs.get("original") or ["?"]),
+                "ratio": ev.get("availabilityRatio"),
+                "is70": ATTR_70MM in ev.get("attributeIds", []),
+            }
     return out
 
 
@@ -508,6 +555,36 @@ def cmd_check(cfg):
         ))
         for _, key, _, _ in info:
             state.setdefault("alerted", {})[f"info:{key}"] = time.time()
+
+    # ---- no-subtitles watch: any format, any Cinema City house in Prague.
+    # Every show so far is English with Czech subtitles; report each show that
+    # turns up without them exactly once.
+    film_id = FILM["id"] or fetch_film_id(until)
+    unsubbed = fetch_unsubbed(film_id, until) if film_id else None
+    if unsubbed is not None:
+        seen = set(state.get("unsubbed_seen", []))
+        fresh = {k: v for k, v in unsubbed.items() if k not in seen}
+        if fresh and not cold_start:
+            rows = sorted(fresh.items(), key=lambda kv: kv[1]["when"])
+            lines = []
+            for _, info in rows:
+                ratio = info["ratio"]
+                free = f"{ratio:.0%} frei" if isinstance(ratio, (int, float)) else "?"
+                fmt = "70 mm IMAX, " if info["is70"] else ""
+                lines.append(f"{info['when'][8:10]}.{info['when'][5:7]}. {info['when'][11:]} "
+                             f"{info['cinema']} ({fmt}{info['lang']} ohne Untertitel) - {free}")
+            first_id, first = rows[0]
+            alerts.append((
+                f"PRAG: {len(fresh)} VORSTELLUNG(EN) OHNE UNTERTITEL",
+                "Originalfassung ohne tschechische Untertitel:\n" + "\n".join(lines),
+                False,
+                seatplan_url(first_id),
+                f"Sitzplan {first['when'][8:10]}.{first['when'][5:7]}. "
+                f"{first['when'][11:]} (englisch)",
+            ))
+            append_log({"ts": now.isoformat(timespec="seconds"),
+                        "unsubbed_new": sorted(fresh)})
+        state["unsubbed_seen"] = sorted(seen | set(unsubbed))
 
     for title, message, urgent, url, url_title in alerts:
         channels = notify(cfg, title, message, urgent, url, url_title)
