@@ -1,0 +1,18 @@
+{
+  "_comment": "Config fuer die stuendliche Cloud-Routine (cloud_run.sh). Keine Geheimnisse: Alarme landen in outbox.jsonl und werden von der Routine per Gmail verschickt.",
+  "wake_ratio": 0.75,
+  "info_ratio": 0.35,
+  "preferred_times": [],
+  "preferred_weekdays": [5, 6],
+  "restricted_from": "2099-01-01",
+  "travel_weekdays": [4, 5],
+  "watch_until": "2027-02-28",
+  "realert_hours": 12,
+  "notify": {
+    "ntfy_topic": null,
+    "pushover_token": null,
+    "pushover_user": null,
+    "macos_local": false,
+    "outbox": "outbox.jsonl"
+  }
+}

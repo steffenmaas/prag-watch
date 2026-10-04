@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,21 +32,33 @@ CONFIG = os.path.join(HERE, "config.json")
 
 TENANT = "10101"
 CINEMA = "1052"          # Praha Flora, OC FLORA
-FILM_ID = "8105s2r"      # "Duna: část třetí" - matched by id, a name hint like
-                         # "dun" would also catch "SLAVTE S NÁMI: Dunkerk"
+# Matched against the Czech film name, case- and accent-insensitive. Use the
+# full title: "dun" alone also catches "SLAVTE S NÁMI: Dunkerk", and plain
+# "duna" would catch a 70mm re-run of Part One or Two.
+FILM_NAME_HINT = "duna: cast treti"
 ATTR_70MM = "70-mm"
 API = "https://www.cinemacity.cz/cz/data-api-service/v1/quickbook"
-BOOKING_PAGE = f"https://www.cinemacity.cz/films/duna-cast-treti/{FILM_ID}"
+# Fallback only - the real film page (id + slug) is learned from the API.
+BOOKING_PAGE = "https://www.cinemacity.cz/cinemas/flora/1052"
+FILM = {"id": None, "link": None}
+
+
+def fold(text):
+    """Lowercase and strip accents: 'Duna: část třetí' -> 'duna: cast treti'."""
+    norm = unicodedata.normalize("NFKD", text or "")
+    return "".join(c for c in norm if not unicodedata.combining(c)).lower()
 
 
 def booking_url(date=None):
     """Deep link to one day's showtimes at Flora. Czech only - www.cinemacity.cz
     has no English version (verified 04.08.2026: /en/, ?lang=en and an English
     Accept-Language header all return lang="cs")."""
-    if not date:
+    if not FILM["link"]:
         return BOOKING_PAGE
-    return (f"{BOOKING_PAGE}#/buy-tickets-by-film?in-cinema={CINEMA}"
-            f"&at={date}&for-movie={FILM_ID}&view-mode=list")
+    if not date:
+        return FILM["link"]
+    return (f"{FILM['link']}#/buy-tickets-by-film?in-cinema={CINEMA}"
+            f"&at={date}&for-movie={FILM['id']}&view-mode=list")
 
 
 def seatplan_url(event_id):
@@ -166,18 +179,22 @@ def fetch_dates(until):
 
 
 def fetch_shows(date):
-    """Return the 70mm shows of FILM_ID on `date` as {"HH:MM": {...}}."""
+    """Return the 70mm shows matching FILM_NAME_HINT on `date` as {"HH:MM": {...}}."""
     url = f"{API}/{TENANT}/film-events/in-cinema/{CINEMA}/at-date/{date}?attr=&lang=cs_CZ"
     data = fetch(url)
     if not data:
         return None
     body = data.get("body", {})
+    films = {f["id"]: f for f in body.get("films", [])}
     out = {}
     for ev in body.get("events", []):
         if ATTR_70MM not in ev.get("attributeIds", []):
             continue
-        if ev.get("filmId") != FILM_ID:
+        film = films.get(ev.get("filmId"), {})
+        if FILM_NAME_HINT not in fold(film.get("name")):
             continue
+        FILM["id"] = film.get("id")
+        FILM["link"] = film.get("link")
         hhmm = ev.get("eventDateTime", "")[11:16]
         out[hhmm] = {
             "id": ev.get("id"),
@@ -193,7 +210,7 @@ def notify(cfg, title, message, urgent, url=None, url_title=None):
     """Fan out to every configured channel. Never raises."""
     n = cfg["notify"]
     sent = []
-    url = url or BOOKING_PAGE
+    url = url or booking_url()
     url_title = url_title or "Tickets Cinema City Flora"
 
     topic = n.get("ntfy_topic")
@@ -260,6 +277,20 @@ def notify(cfg, title, message, urgent, url=None, url_title=None):
             sent.append(note + ")")
         except Exception as exc:  # noqa: BLE001
             print(f"WARN: pushover failed: {exc}", file=sys.stderr)
+
+    # Outbox: alerts land in a JSON-lines file for someone else to deliver
+    # (the cloud routine reads it and sends each entry as an e-mail).
+    if n.get("outbox"):
+        try:
+            with open(os.path.join(HERE, n["outbox"]), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "ts": datetime.now(TZ).isoformat(timespec="seconds"),
+                    "title": title, "message": message, "urgent": urgent,
+                    "url": url, "url_title": url_title,
+                }, ensure_ascii=False) + "\n")
+            sent.append("outbox")
+        except OSError as exc:
+            print(f"WARN: outbox failed: {exc}", file=sys.stderr)
 
     if n.get("macos_local"):
         try:

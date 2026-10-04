@@ -53,13 +53,14 @@ Die Konstanten stehen oben in `prag_watch.py`:
 ```python
 TENANT = "10101"
 CINEMA = "1052"          # Praha Flora, OC FLORA
-FILM_ID = "8105s2r"      # "Duna: část třetí"
+FILM_NAME_HINT = "duna: cast treti"   # tschechischer Titel, ohne Akzente
 ATTR_70MM = "70-mm"
 ```
 
-Für einen anderen Film tauschst Du `FILM_ID` und den Slug in `BOOKING_PAGE`. Beides steht in
-der Film-URL auf cinemacity.cz (`/films/<slug>/<id>`). Der Abgleich läuft über die ID und nicht
-über einen Namensbestandteil, weil „dun“ auch „Dunkerk“ trifft. Für ein anderes
+Für einen anderen Film tauschst Du `FILM_NAME_HINT` gegen dessen tschechischen Titel.
+Groß-/Kleinschreibung und Akzente spielen keine Rolle. Den Link zur Filmseite holt sich das
+Script selbst aus der API. Nimm den vollen Titel: „dun“ trifft auch „Dunkerk“, und „duna“
+würde auch eine 70-mm-Wiederaufführung von Teil 1 oder 2 treffen. Für ein anderes
 Cinema-City-Haus reicht `CINEMA`. Für eine andere Kinokette taugt die Struktur als Vorlage, die
 API-Aufrufe muss man neu schreiben.
 
@@ -134,6 +135,19 @@ Gegenprobe bitte mit stummem iPhone, aktivem Schlaf-Fokus und Handy im Nebenzimm
 
 Und noch eine: **Ein Weckruf hört nicht auf, wenn man die Mitteilung öffnet.** Priorität 2 endet
 erst mit „Acknowledge“ in der App. Ein Tipp auf den Buchungslink zählt nicht.
+
+## Dauerbetrieb in der Cloud (claude.ai-Routine)
+
+Für den Betrieb ohne eigenen Rechner gibt es `cloud_run.sh` und `config.cloud.json`. Eine
+claude.ai-Routine startet stündlich eine frische Session und arbeitet dort drei Schritte ab:
+
+1. `./cloud_run.sh check` holt `state.json` und `log.jsonl` aus dem Branch `watch-state` und
+   prüft einmal. Alarme landen in `outbox.jsonl`.
+2. Jeder Eintrag aus dem Postausgang geht per Gmail-Connector als E-Mail raus, mit Buchungslink.
+3. `./cloud_run.sh persist` schreibt den Zustand zurück in den Branch `watch-state`.
+
+Weil der Container zwischen zwei Läufen gelöscht wird, überlebt der Zustand nur in diesem Branch.
+Den Branch nicht löschen! Ohne ihn startet der Wächter kalt und lernt den Spielplan still neu.
 
 ## Dauerbetrieb auf dem Mac
 
