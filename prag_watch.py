@@ -13,6 +13,7 @@ Usage:
     prag_watch.py check     # one poll; logs, alerts if warranted   (this is what launchd runs)
     prag_watch.py report    # analyse the log: publication times + sell-down curves
     prag_watch.py test      # send a test notification through every configured channel
+    prag_watch.py subs      # one-off: Prague shows without subtitles (all houses)
 """
 
 import json
@@ -556,36 +557,6 @@ def cmd_check(cfg):
         for _, key, _, _ in info:
             state.setdefault("alerted", {})[f"info:{key}"] = time.time()
 
-    # ---- no-subtitles watch: any format, any Cinema City house in Prague.
-    # Every show so far is English with Czech subtitles; report each show that
-    # turns up without them exactly once.
-    film_id = FILM["id"] or fetch_film_id(until)
-    unsubbed = fetch_unsubbed(film_id, until) if film_id else None
-    if unsubbed is not None:
-        seen = set(state.get("unsubbed_seen", []))
-        fresh = {k: v for k, v in unsubbed.items() if k not in seen}
-        if fresh and not cold_start:
-            rows = sorted(fresh.items(), key=lambda kv: kv[1]["when"])
-            lines = []
-            for _, info in rows:
-                ratio = info["ratio"]
-                free = f"{ratio:.0%} frei" if isinstance(ratio, (int, float)) else "?"
-                fmt = "70 mm IMAX, " if info["is70"] else ""
-                lines.append(f"{info['when'][8:10]}.{info['when'][5:7]}. {info['when'][11:]} "
-                             f"{info['cinema']} ({fmt}{info['lang']} ohne Untertitel) - {free}")
-            first_id, first = rows[0]
-            alerts.append((
-                f"PRAG: {len(fresh)} VORSTELLUNG(EN) OHNE UNTERTITEL",
-                "Originalfassung ohne tschechische Untertitel:\n" + "\n".join(lines),
-                False,
-                seatplan_url(first_id),
-                f"Sitzplan {first['when'][8:10]}.{first['when'][5:7]}. "
-                f"{first['when'][11:]} (englisch)",
-            ))
-            append_log({"ts": now.isoformat(timespec="seconds"),
-                        "unsubbed_new": sorted(fresh)})
-        state["unsubbed_seen"] = sorted(seen | set(unsubbed))
-
     for title, message, urgent, url, url_title in alerts:
         channels = notify(cfg, title, message, urgent, url, url_title)
         append_log({"ts": now.isoformat(timespec="seconds"),
@@ -674,6 +645,31 @@ def cmd_report():
     return 0
 
 
+def cmd_subs():
+    """One-off: list every Prague show of the film without subtitles.
+
+    Whether a house offers an undubbed, unsubtitled print is a property of the
+    house, not something that changes hour by hour - so this is a manual
+    check, not part of `check`.
+    """
+    until = (datetime.now(TZ) + timedelta(days=180)).strftime("%Y-%m-%d")
+    film_id = fetch_film_id(until)
+    if not film_id:
+        print(f"Film '{FILM_NAME_HINT}' nicht gefunden.")
+        return 1
+    shows = fetch_unsubbed(film_id, until)
+    if shows is None:
+        print("API nicht erreichbar.")
+        return 1
+    if not shows:
+        print("Keine Vorstellung ohne Untertitel in Prag - alles mit tschechischen Untertiteln.")
+        return 0
+    for event_id, info in sorted(shows.items(), key=lambda kv: kv[1]["when"]):
+        fmt = "70 mm, " if info["is70"] else ""
+        print(f"{info['when']}  {info['cinema']}  ({fmt}{info['lang']})  {seatplan_url(event_id)}")
+    return 0
+
+
 def cmd_test(cfg, only=None):
     """Send a test alert. `only` restricts to one channel so a Mac sound
     cannot be mistaken for a phone sound during diagnosis."""
@@ -751,6 +747,8 @@ def main():
         return cmd_check(cfg)
     if cmd == "report":
         return cmd_report()
+    if cmd == "subs":
+        return cmd_subs()
     if cmd == "test":
         return cmd_test(cfg, sys.argv[2] if len(sys.argv) > 2 else None)
     print(__doc__)
