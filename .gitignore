@@ -6,3 +6,4 @@ watch.err.log
 __pycache__/
 *.pyc
 .DS_Store
+outbox.jsonl

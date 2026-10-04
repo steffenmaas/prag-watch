@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prag IMAX watcher — Cinema City Flora, "Odyssea" (Nolan) in 2D IMAX 70mm.
+Prag IMAX watcher — Cinema City Flora, "Duna: část třetí" (Dune: Part Three) in 2D IMAX 70mm.
 
 Two jobs:
   1. Detect the exact moment new bookable days are published (poll often, log timestamps).
@@ -13,12 +13,14 @@ Usage:
     prag_watch.py check     # one poll; logs, alerts if warranted   (this is what launchd runs)
     prag_watch.py report    # analyse the log: publication times + sell-down curves
     prag_watch.py test      # send a test notification through every configured channel
+    prag_watch.py status    # read-only summary: bookable shows + watcher health
 """
 
 import json
 import os
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,21 +33,33 @@ CONFIG = os.path.join(HERE, "config.json")
 
 TENANT = "10101"
 CINEMA = "1052"          # Praha Flora, OC FLORA
-FILM_NAME_HINT = "dyss"  # matches "Odyssea" / "The Odyssey"
+# Matched against the Czech film name, case- and accent-insensitive. Use the
+# full title: "dun" alone also catches "SLAVTE S NÁMI: Dunkerk", and plain
+# "duna" would catch a 70mm re-run of Part One or Two.
+FILM_NAME_HINT = "duna: cast treti"
 ATTR_70MM = "70-mm"
 API = "https://www.cinemacity.cz/cz/data-api-service/v1/quickbook"
-BOOKING_PAGE = "https://www.cinemacity.cz/en/films/the-odyssey/7268s2r"
+# Fallback only - the real film page (id + slug) is learned from the API.
+BOOKING_PAGE = "https://www.cinemacity.cz/cinemas/flora"
+FILM = {"id": None, "link": None}
+
+
+def fold(text):
+    """Lowercase and strip accents: 'Duna: část třetí' -> 'duna: cast treti'."""
+    norm = unicodedata.normalize("NFKD", text or "")
+    return "".join(c for c in norm if not unicodedata.combining(c)).lower()
 
 
 def booking_url(date=None):
     """Deep link to one day's showtimes at Flora. Czech only - www.cinemacity.cz
     has no English version (verified 04.08.2026: /en/, ?lang=en and an English
     Accept-Language header all return lang="cs")."""
-    if not date:
+    if not FILM["link"]:
         return BOOKING_PAGE
-    return ("https://www.cinemacity.cz/films/the-odyssey/7268s2r"
-            "#/buy-tickets-by-film?in-cinema=1052"
-            f"&at={date}&for-movie=7268s2r&view-mode=list")
+    if not date:
+        return FILM["link"]
+    return (f"{FILM['link']}#/buy-tickets-by-film?in-cinema={CINEMA}"
+            f"&at={date}&for-movie={FILM['id']}&view-mode=list")
 
 
 def seatplan_url(event_id):
@@ -57,8 +71,12 @@ def seatplan_url(event_id):
     """
     return f"https://tickets.cinemacity.cz/order/{event_id}?lang=en"
 
-# Europe/Prague == Europe/Berlin for our purposes; both CEST in Aug/Sep.
-TZ = timezone(timedelta(hours=2))
+# The Dune run spans the CEST -> CET switch, so use the real zone if available.
+try:
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo("Europe/Prague")
+except Exception:  # noqa: BLE001 - Python < 3.9 or no tzdata
+    TZ = timezone(timedelta(hours=1))
 
 DEFAULTS = {
     # --- Two alert tiers ---
@@ -74,10 +92,10 @@ DEFAULTS = {
     "preferred_weekdays": [5, 6],   # Sat/Sun - no vacation day needed
     # From this date on only some weekdays are travelable (school term, work,
     # whatever constrains you). Before it, any weekday is fine.
-    "restricted_from": "2026-08-20",
+    "restricted_from": "2099-01-01",
     "travel_weekdays": [4, 5],   # Mon=0 ... Fri=4, Sat=5
     # Stop watching once the 70mm run ends.
-    "watch_until": "2026-09-16",
+    "watch_until": "2027-02-28",
     # Re-alert about the same show at most once every N hours.
     "realert_hours": 12,
     "notify": {
@@ -162,19 +180,22 @@ def fetch_dates(until):
 
 
 def fetch_shows(date):
-    """Return the 70mm Odyssea shows on `date` as {"HH:MM": {...}}."""
+    """Return the 70mm shows matching FILM_NAME_HINT on `date` as {"HH:MM": {...}}."""
     url = f"{API}/{TENANT}/film-events/in-cinema/{CINEMA}/at-date/{date}?attr=&lang=cs_CZ"
     data = fetch(url)
     if not data:
         return None
     body = data.get("body", {})
-    films = {f["id"]: f.get("name", "") for f in body.get("films", [])}
+    films = {f["id"]: f for f in body.get("films", [])}
     out = {}
     for ev in body.get("events", []):
         if ATTR_70MM not in ev.get("attributeIds", []):
             continue
-        if FILM_NAME_HINT not in films.get(ev.get("filmId"), "").lower():
+        film = films.get(ev.get("filmId"), {})
+        if FILM_NAME_HINT not in fold(film.get("name")):
             continue
+        FILM["id"] = film.get("id")
+        FILM["link"] = film.get("link")
         hhmm = ev.get("eventDateTime", "")[11:16]
         out[hhmm] = {
             "id": ev.get("id"),
@@ -190,7 +211,7 @@ def notify(cfg, title, message, urgent, url=None, url_title=None):
     """Fan out to every configured channel. Never raises."""
     n = cfg["notify"]
     sent = []
-    url = url or BOOKING_PAGE
+    url = url or booking_url()
     url_title = url_title or "Tickets Cinema City Flora"
 
     topic = n.get("ntfy_topic")
@@ -257,6 +278,20 @@ def notify(cfg, title, message, urgent, url=None, url_title=None):
             sent.append(note + ")")
         except Exception as exc:  # noqa: BLE001
             print(f"WARN: pushover failed: {exc}", file=sys.stderr)
+
+    # Outbox: alerts land in a JSON-lines file for someone else to deliver
+    # (the cloud routine reads it and sends each entry as an e-mail).
+    if n.get("outbox"):
+        try:
+            with open(os.path.join(HERE, n["outbox"]), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "ts": datetime.now(TZ).isoformat(timespec="seconds"),
+                    "title": title, "message": message, "urgent": urgent,
+                    "url": url, "url_title": url_title,
+                }, ensure_ascii=False) + "\n")
+            sent.append("outbox")
+        except OSError as exc:
+            print(f"WARN: outbox failed: {exc}", file=sys.stderr)
 
     if n.get("macos_local"):
         try:
@@ -331,7 +366,8 @@ def cmd_check(cfg):
         return 0
 
     state = load_state()
-    until = (now + timedelta(days=60)).strftime("%Y-%m-%d")
+    # Look far ahead: premieres (and previews) are published months early.
+    until = (now + timedelta(days=180)).strftime("%Y-%m-%d")
 
     dates = fetch_dates(until)
     if dates is None:
@@ -340,21 +376,23 @@ def cmd_check(cfg):
 
     known = set(state.get("dates", []))
     shows_now, show_ids = {}, {}
-    odyssea_dates = []
+    film_dates = []
     for date in dates:
         shows = fetch_shows(date)
         if not shows:
             continue
-        odyssea_dates.append(date)
+        film_dates.append(date)
         for hhmm, info in shows.items():
             shows_now[f"{date}T{hhmm}"] = info["ratio"]
             show_ids[f"{date}T{hhmm}"] = info["id"]
 
-    # A day only counts as "new" once it actually carries Odyssea 70mm shows.
-    new_dates = sorted(set(odyssea_dates) - known)
+    # A day only counts as "new" once it actually carries Dune 70mm shows.
+    new_dates = sorted(set(film_dates) - known)
     # Cold start: the whole schedule looks "new". Seed silently instead of
     # firing a 3am alarm the first time the watcher (or a reinstall) runs.
-    cold_start = not known
+    # Keyed on a flag, not on `known`: if the first run finds no days at all,
+    # the first real publication must still wake you.
+    cold_start = not state.get("seeded") and not known
     if cold_start:
         new_dates = []
 
@@ -364,9 +402,9 @@ def cmd_check(cfg):
     record = {"ts": now.isoformat(timespec="seconds")}
     if cold_start:
         record["seed"] = True
-    if odyssea_dates:
-        record["horizon"] = max(odyssea_dates)
-        record["n_days"] = len(odyssea_dates)
+    if film_dates:
+        record["horizon"] = max(film_dates)
+        record["n_days"] = len(film_dates)
     if new_dates:
         record["new_dates"] = new_dates
     if changed:
@@ -481,12 +519,13 @@ def cmd_check(cfg):
     # Union, never replace: the API drops "today" between shows and re-adds it
     # later (seen 08.08.2026, 17:24-18:34) - forgetting a date would make its
     # return look like a fresh publication and fire a false wake-up alert.
-    state["dates"] = sorted(known | set(odyssea_dates))
+    state["dates"] = sorted(known | set(film_dates))
     state["shows"] = shows_now
+    state["seeded"] = True
     save_state(state)
 
     print(f"{now:%Y-%m-%d %H:%M} horizon={record.get('horizon','-')} "
-          f"days={len(odyssea_dates)} new={len(new_dates)} changed={len(changed)}")
+          f"days={len(film_dates)} new={len(new_dates)} changed={len(changed)}")
     return 0
 
 
@@ -556,6 +595,62 @@ def cmd_report():
     errs = [r for r in records if r.get("error")]
     if errs:
         print(f"=== FEHLER: {len(errs)} (zuletzt {errs[-1]['ts']}) ===")
+    return 0
+
+
+def cmd_status(cfg):
+    """Read-only weekly summary: what is bookable right now and is the watcher
+    alive? Touches neither state.json nor log.jsonl."""
+    now = datetime.now(TZ)
+    print(f"Stand {now:%d.%m.%Y %H:%M} - Dune: Part Three, 70 mm IMAX, Cinema City Flora\n")
+
+    until = (now + timedelta(days=180)).strftime("%Y-%m-%d")
+    dates = fetch_dates(until)
+    if dates is None:
+        print("SPIELPLAN: API nicht erreichbar.\n")
+    else:
+        rows = []
+        for date in dates:
+            for hhmm, info in sorted((fetch_shows(date) or {}).items()):
+                rows.append((date, hhmm, info))
+        if not rows:
+            print("SPIELPLAN: keine 70-mm-Vorstellungen freigeschaltet.\n")
+        else:
+            print(f"SPIELPLAN ({len({r[0] for r in rows})} Tage, {len(rows)} Vorstellungen):")
+            for date, hhmm, info in rows:
+                weekday = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"][
+                    datetime.strptime(date, "%Y-%m-%d").weekday()]
+                ratio = info["ratio"]
+                if info.get("soldOut") or not ratio:
+                    free = "ausverkauft"
+                else:
+                    free = f"{ratio:.0%} frei" + ("  <-- BUCHBAR" if ratio >= cfg["info_ratio"] else "")
+                print(f"  {weekday} {date[8:10]}.{date[5:7]}. {hhmm}  {free}  {seatplan_url(info['id'])}")
+            print(f"\nAlle Zeiten: {booking_url()}\n")
+
+    records = []
+    if os.path.exists(LOG):
+        with open(LOG, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    continue
+    week_ago = now - timedelta(days=7)
+    recent = [r for r in records if datetime.fromisoformat(r["ts"]) >= week_ago]
+    print("WAECHTER:")
+    if records:
+        last = datetime.fromisoformat(records[-1]["ts"])
+        age_h = (now - last).total_seconds() / 3600
+        print(f"  letzter Logeintrag: {last.astimezone(TZ):%d.%m. %H:%M} "
+              f"(vor {age_h:.1f} h){'  <-- WAECHTER LAEUFT NICHT?' if age_h > 3 else ''}")
+    else:
+        print("  noch kein Logeintrag")
+    print(f"  letzte 7 Tage: {len(recent)} Logeintraege, "
+          f"{sum(1 for r in recent if r.get('new_dates'))} Freischaltungen, "
+          f"{sum(1 for r in recent if r.get('alert'))} Alarme, "
+          f"{sum(1 for r in recent if r.get('error'))} Fehler")
+    print(f"  laeuft bis: {cfg['watch_until']}")
     return 0
 
 
@@ -636,6 +731,8 @@ def main():
         return cmd_check(cfg)
     if cmd == "report":
         return cmd_report()
+    if cmd == "status":
+        return cmd_status(cfg)
     if cmd == "test":
         return cmd_test(cfg, sys.argv[2] if len(sys.argv) > 2 else None)
     print(__doc__)
