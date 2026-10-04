@@ -7,15 +7,16 @@
   "preferred_times": ["09:00"],
   "preferred_weekdays": [5, 6],
 
-  "restricted_from": "2026-08-20",
+  "_restricted_hinweis": "Ab diesem Tag zaehlen nur travel_weekdays (Mo=0 ... So=6). 2099 = jeder Tag ist relevant.",
+  "restricted_from": "2099-01-01",
   "travel_weekdays": [4, 5],
 
   "_watch_until_hinweis": "PFLICHT: Tag, an dem der Waechter aufhoert. Liegt er in der Vergangenheit, tut das Script gar nichts.",
-  "watch_until": "2026-09-16",
+  "watch_until": "2027-02-28",
   "realert_hours": 12,
 
   "notify": {
-    "ntfy_topic": "prag-imax-DEINGEHEIMERSTRING",
+    "ntfy_topic": "prag-dune-DEINGEHEIMERSTRING",
     "ntfy_server": "https://ntfy.sh",
 
     "pushover_token": null,

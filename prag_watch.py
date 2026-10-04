@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prag IMAX watcher — Cinema City Flora, "Odyssea" (Nolan) in 2D IMAX 70mm.
+Prag IMAX watcher — Cinema City Flora, "Duna: část třetí" (Dune: Part Three) in 2D IMAX 70mm.
 
 Two jobs:
   1. Detect the exact moment new bookable days are published (poll often, log timestamps).
@@ -31,10 +31,11 @@ CONFIG = os.path.join(HERE, "config.json")
 
 TENANT = "10101"
 CINEMA = "1052"          # Praha Flora, OC FLORA
-FILM_NAME_HINT = "dyss"  # matches "Odyssea" / "The Odyssey"
+FILM_ID = "8105s2r"      # "Duna: část třetí" - matched by id, a name hint like
+                         # "dun" would also catch "SLAVTE S NÁMI: Dunkerk"
 ATTR_70MM = "70-mm"
 API = "https://www.cinemacity.cz/cz/data-api-service/v1/quickbook"
-BOOKING_PAGE = "https://www.cinemacity.cz/en/films/the-odyssey/7268s2r"
+BOOKING_PAGE = f"https://www.cinemacity.cz/films/duna-cast-treti/{FILM_ID}"
 
 
 def booking_url(date=None):
@@ -43,9 +44,8 @@ def booking_url(date=None):
     Accept-Language header all return lang="cs")."""
     if not date:
         return BOOKING_PAGE
-    return ("https://www.cinemacity.cz/films/the-odyssey/7268s2r"
-            "#/buy-tickets-by-film?in-cinema=1052"
-            f"&at={date}&for-movie=7268s2r&view-mode=list")
+    return (f"{BOOKING_PAGE}#/buy-tickets-by-film?in-cinema={CINEMA}"
+            f"&at={date}&for-movie={FILM_ID}&view-mode=list")
 
 
 def seatplan_url(event_id):
@@ -57,8 +57,12 @@ def seatplan_url(event_id):
     """
     return f"https://tickets.cinemacity.cz/order/{event_id}?lang=en"
 
-# Europe/Prague == Europe/Berlin for our purposes; both CEST in Aug/Sep.
-TZ = timezone(timedelta(hours=2))
+# The Dune run spans the CEST -> CET switch, so use the real zone if available.
+try:
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo("Europe/Prague")
+except Exception:  # noqa: BLE001 - Python < 3.9 or no tzdata
+    TZ = timezone(timedelta(hours=1))
 
 DEFAULTS = {
     # --- Two alert tiers ---
@@ -74,10 +78,10 @@ DEFAULTS = {
     "preferred_weekdays": [5, 6],   # Sat/Sun - no vacation day needed
     # From this date on only some weekdays are travelable (school term, work,
     # whatever constrains you). Before it, any weekday is fine.
-    "restricted_from": "2026-08-20",
+    "restricted_from": "2099-01-01",
     "travel_weekdays": [4, 5],   # Mon=0 ... Fri=4, Sat=5
     # Stop watching once the 70mm run ends.
-    "watch_until": "2026-09-16",
+    "watch_until": "2027-02-28",
     # Re-alert about the same show at most once every N hours.
     "realert_hours": 12,
     "notify": {
@@ -162,18 +166,17 @@ def fetch_dates(until):
 
 
 def fetch_shows(date):
-    """Return the 70mm Odyssea shows on `date` as {"HH:MM": {...}}."""
+    """Return the 70mm shows of FILM_ID on `date` as {"HH:MM": {...}}."""
     url = f"{API}/{TENANT}/film-events/in-cinema/{CINEMA}/at-date/{date}?attr=&lang=cs_CZ"
     data = fetch(url)
     if not data:
         return None
     body = data.get("body", {})
-    films = {f["id"]: f.get("name", "") for f in body.get("films", [])}
     out = {}
     for ev in body.get("events", []):
         if ATTR_70MM not in ev.get("attributeIds", []):
             continue
-        if FILM_NAME_HINT not in films.get(ev.get("filmId"), "").lower():
+        if ev.get("filmId") != FILM_ID:
             continue
         hhmm = ev.get("eventDateTime", "")[11:16]
         out[hhmm] = {
@@ -331,7 +334,8 @@ def cmd_check(cfg):
         return 0
 
     state = load_state()
-    until = (now + timedelta(days=60)).strftime("%Y-%m-%d")
+    # Look far ahead: premieres (and previews) are published months early.
+    until = (now + timedelta(days=180)).strftime("%Y-%m-%d")
 
     dates = fetch_dates(until)
     if dates is None:
@@ -340,21 +344,23 @@ def cmd_check(cfg):
 
     known = set(state.get("dates", []))
     shows_now, show_ids = {}, {}
-    odyssea_dates = []
+    film_dates = []
     for date in dates:
         shows = fetch_shows(date)
         if not shows:
             continue
-        odyssea_dates.append(date)
+        film_dates.append(date)
         for hhmm, info in shows.items():
             shows_now[f"{date}T{hhmm}"] = info["ratio"]
             show_ids[f"{date}T{hhmm}"] = info["id"]
 
-    # A day only counts as "new" once it actually carries Odyssea 70mm shows.
-    new_dates = sorted(set(odyssea_dates) - known)
+    # A day only counts as "new" once it actually carries Dune 70mm shows.
+    new_dates = sorted(set(film_dates) - known)
     # Cold start: the whole schedule looks "new". Seed silently instead of
     # firing a 3am alarm the first time the watcher (or a reinstall) runs.
-    cold_start = not known
+    # Keyed on a flag, not on `known`: if the first run finds no days at all,
+    # the first real publication must still wake you.
+    cold_start = not state.get("seeded") and not known
     if cold_start:
         new_dates = []
 
@@ -364,9 +370,9 @@ def cmd_check(cfg):
     record = {"ts": now.isoformat(timespec="seconds")}
     if cold_start:
         record["seed"] = True
-    if odyssea_dates:
-        record["horizon"] = max(odyssea_dates)
-        record["n_days"] = len(odyssea_dates)
+    if film_dates:
+        record["horizon"] = max(film_dates)
+        record["n_days"] = len(film_dates)
     if new_dates:
         record["new_dates"] = new_dates
     if changed:
@@ -481,12 +487,13 @@ def cmd_check(cfg):
     # Union, never replace: the API drops "today" between shows and re-adds it
     # later (seen 08.08.2026, 17:24-18:34) - forgetting a date would make its
     # return look like a fresh publication and fire a false wake-up alert.
-    state["dates"] = sorted(known | set(odyssea_dates))
+    state["dates"] = sorted(known | set(film_dates))
     state["shows"] = shows_now
+    state["seeded"] = True
     save_state(state)
 
     print(f"{now:%Y-%m-%d %H:%M} horizon={record.get('horizon','-')} "
-          f"days={len(odyssea_dates)} new={len(new_dates)} changed={len(changed)}")
+          f"days={len(film_dates)} new={len(new_dates)} changed={len(changed)}")
     return 0
 
 
