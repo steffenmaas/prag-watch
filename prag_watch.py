@@ -13,7 +13,6 @@ Usage:
     prag_watch.py check     # one poll; logs, alerts if warranted   (this is what launchd runs)
     prag_watch.py report    # analyse the log: publication times + sell-down curves
     prag_watch.py test      # send a test notification through every configured channel
-    prag_watch.py subs      # one-off: Prague shows without subtitles (all houses)
 """
 
 import json
@@ -33,7 +32,6 @@ CONFIG = os.path.join(HERE, "config.json")
 
 TENANT = "10101"
 CINEMA = "1052"          # Praha Flora, OC FLORA
-GROUP = "prague"         # all Prague houses - for the no-subtitles watch
 # Matched against the Czech film name, case- and accent-insensitive. Use the
 # full title: "dun" alone also catches "SLAVTE S NÁMI: Dunkerk", and plain
 # "duna" would catch a 70mm re-run of Part One or Two.
@@ -203,52 +201,6 @@ def fetch_shows(date):
             "ratio": ev.get("availabilityRatio"),
             "soldOut": ev.get("soldOut"),
         }
-    return out
-
-
-def fetch_film_id(until):
-    """Resolve FILM_NAME_HINT to the API's film id (one call)."""
-    data = fetch(f"{API}/{TENANT}/films/until/{until}?attr=&lang=cs_CZ")
-    if not data:
-        return None
-    for film in data.get("body", {}).get("films", []):
-        if FILM_NAME_HINT in fold(film.get("name")):
-            FILM["id"] = film.get("id")
-            FILM["link"] = FILM["link"] or film.get("link")
-            return FILM["id"]
-    return None
-
-
-def fetch_unsubbed(film_id, until):
-    """All shows of the film in Prague (every Cinema City house, any format)
-    that run in the original language WITHOUT subtitles and are not dubbed.
-
-    One call for the dates plus one per day - the group endpoint returns all
-    Prague cinemas at once. Returns {event_id: {...}} or None on failure.
-    """
-    data = fetch(f"{API}/{TENANT}/dates/in-group/{GROUP}/with-film/{film_id}"
-                 f"/until/{until}?attr=&lang=cs_CZ")
-    if data is None:
-        return None
-    out = {}
-    for date in data.get("body", {}).get("dates", []):
-        day = fetch(f"{API}/{TENANT}/cinema-events/in-group/{GROUP}/with-film/"
-                    f"{film_id}/at-date/{date}?attr=&lang=cs_CZ")
-        if not day:
-            continue
-        body = day.get("body", {})
-        cinemas = {c["id"]: c.get("displayName", c["id"]) for c in body.get("cinemas", [])}
-        for ev in body.get("events", []):
-            langs = ev.get("languages") or {}
-            if langs.get("subtitles") or langs.get("dubbed") or langs.get("voiceover"):
-                continue
-            out[str(ev.get("id"))] = {
-                "when": ev.get("eventDateTime", "")[:16],
-                "cinema": cinemas.get(ev.get("cinemaId"), ev.get("cinemaId")),
-                "lang": "/".join(langs.get("original") or ["?"]),
-                "ratio": ev.get("availabilityRatio"),
-                "is70": ATTR_70MM in ev.get("attributeIds", []),
-            }
     return out
 
 
@@ -645,31 +597,6 @@ def cmd_report():
     return 0
 
 
-def cmd_subs():
-    """One-off: list every Prague show of the film without subtitles.
-
-    Whether a house offers an undubbed, unsubtitled print is a property of the
-    house, not something that changes hour by hour - so this is a manual
-    check, not part of `check`.
-    """
-    until = (datetime.now(TZ) + timedelta(days=180)).strftime("%Y-%m-%d")
-    film_id = fetch_film_id(until)
-    if not film_id:
-        print(f"Film '{FILM_NAME_HINT}' nicht gefunden.")
-        return 1
-    shows = fetch_unsubbed(film_id, until)
-    if shows is None:
-        print("API nicht erreichbar.")
-        return 1
-    if not shows:
-        print("Keine Vorstellung ohne Untertitel in Prag - alles mit tschechischen Untertiteln.")
-        return 0
-    for event_id, info in sorted(shows.items(), key=lambda kv: kv[1]["when"]):
-        fmt = "70 mm, " if info["is70"] else ""
-        print(f"{info['when']}  {info['cinema']}  ({fmt}{info['lang']})  {seatplan_url(event_id)}")
-    return 0
-
-
 def cmd_test(cfg, only=None):
     """Send a test alert. `only` restricts to one channel so a Mac sound
     cannot be mistaken for a phone sound during diagnosis."""
@@ -747,8 +674,6 @@ def main():
         return cmd_check(cfg)
     if cmd == "report":
         return cmd_report()
-    if cmd == "subs":
-        return cmd_subs()
     if cmd == "test":
         return cmd_test(cfg, sys.argv[2] if len(sys.argv) > 2 else None)
     print(__doc__)

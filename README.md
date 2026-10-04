@@ -25,10 +25,6 @@ Entstanden in ein paar Runden mit Claude Code. Die eigentliche Arbeit steckte in
    freigeschalteter Schwung nach einer Stunde noch zu holen ist oder nach zehn Minuten schon
    halb weg.
 
-Einmalig: `python3 prag_watch.py subs` listet alle Prager Vorstellungen des Films in
-Originalfassung **ohne** Untertitel, über alle Cinema-City-Häuser und Formate. Das gehört nicht
-in den stündlichen Lauf, denn ob ein Haus eine solche Fassung führt, ändert sich nicht stündlich.
-
 ## Was es bewusst nicht tut
 
 - **Kein Login, kein Umgehen von Schutzmaßnahmen.** Es spricht ausschließlich die öffentliche
