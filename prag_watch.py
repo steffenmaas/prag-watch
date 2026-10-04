@@ -13,6 +13,7 @@ Usage:
     prag_watch.py check     # one poll; logs, alerts if warranted   (this is what launchd runs)
     prag_watch.py report    # analyse the log: publication times + sell-down curves
     prag_watch.py test      # send a test notification through every configured channel
+    prag_watch.py status    # read-only summary: bookable shows + watcher health
 """
 
 import json
@@ -597,6 +598,62 @@ def cmd_report():
     return 0
 
 
+def cmd_status(cfg):
+    """Read-only weekly summary: what is bookable right now and is the watcher
+    alive? Touches neither state.json nor log.jsonl."""
+    now = datetime.now(TZ)
+    print(f"Stand {now:%d.%m.%Y %H:%M} - Dune: Part Three, 70 mm IMAX, Cinema City Flora\n")
+
+    until = (now + timedelta(days=180)).strftime("%Y-%m-%d")
+    dates = fetch_dates(until)
+    if dates is None:
+        print("SPIELPLAN: API nicht erreichbar.\n")
+    else:
+        rows = []
+        for date in dates:
+            for hhmm, info in sorted((fetch_shows(date) or {}).items()):
+                rows.append((date, hhmm, info))
+        if not rows:
+            print("SPIELPLAN: keine 70-mm-Vorstellungen freigeschaltet.\n")
+        else:
+            print(f"SPIELPLAN ({len({r[0] for r in rows})} Tage, {len(rows)} Vorstellungen):")
+            for date, hhmm, info in rows:
+                weekday = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"][
+                    datetime.strptime(date, "%Y-%m-%d").weekday()]
+                ratio = info["ratio"]
+                if info.get("soldOut") or not ratio:
+                    free = "ausverkauft"
+                else:
+                    free = f"{ratio:.0%} frei" + ("  <-- BUCHBAR" if ratio >= cfg["info_ratio"] else "")
+                print(f"  {weekday} {date[8:10]}.{date[5:7]}. {hhmm}  {free}  {seatplan_url(info['id'])}")
+            print(f"\nAlle Zeiten: {booking_url()}\n")
+
+    records = []
+    if os.path.exists(LOG):
+        with open(LOG, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    continue
+    week_ago = now - timedelta(days=7)
+    recent = [r for r in records if datetime.fromisoformat(r["ts"]) >= week_ago]
+    print("WAECHTER:")
+    if records:
+        last = datetime.fromisoformat(records[-1]["ts"])
+        age_h = (now - last).total_seconds() / 3600
+        print(f"  letzter Logeintrag: {last.astimezone(TZ):%d.%m. %H:%M} "
+              f"(vor {age_h:.1f} h){'  <-- WAECHTER LAEUFT NICHT?' if age_h > 3 else ''}")
+    else:
+        print("  noch kein Logeintrag")
+    print(f"  letzte 7 Tage: {len(recent)} Logeintraege, "
+          f"{sum(1 for r in recent if r.get('new_dates'))} Freischaltungen, "
+          f"{sum(1 for r in recent if r.get('alert'))} Alarme, "
+          f"{sum(1 for r in recent if r.get('error'))} Fehler")
+    print(f"  laeuft bis: {cfg['watch_until']}")
+    return 0
+
+
 def cmd_test(cfg, only=None):
     """Send a test alert. `only` restricts to one channel so a Mac sound
     cannot be mistaken for a phone sound during diagnosis."""
@@ -674,6 +731,8 @@ def main():
         return cmd_check(cfg)
     if cmd == "report":
         return cmd_report()
+    if cmd == "status":
+        return cmd_status(cfg)
     if cmd == "test":
         return cmd_test(cfg, sys.argv[2] if len(sys.argv) > 2 else None)
     print(__doc__)

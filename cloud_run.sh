@@ -4,6 +4,7 @@
 #
 #   ./cloud_run.sh check     restore state, poll once, print outbox.jsonl
 #   ./cloud_run.sh persist   commit state.json + log.jsonl to watch-state, push
+#   ./cloud_run.sh status    read-only weekly summary (changes nothing)
 #
 # Run `persist` only AFTER the e-mails from the outbox went out: if sending
 # fails, the next run sees the same news again instead of losing it.
@@ -26,6 +27,12 @@ case "${1:-}" in
     echo "--- OUTBOX ---"
     if [ -s outbox.jsonl ]; then cat outbox.jsonl; else echo "(leer - nichts zu melden)"; fi
     exit $status
+    ;;
+  status)
+    cp config.cloud.json config.json
+    git fetch -q origin "$BRANCH" 2>/dev/null && \
+      git show "origin/$BRANCH:log.jsonl" > log.jsonl 2>/dev/null
+    python3 prag_watch.py status
     ;;
   persist)
     [ -f state.json ] || { echo "no state.json - run check first"; exit 1; }
